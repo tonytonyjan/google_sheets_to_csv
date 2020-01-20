@@ -1,0 +1,79 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require 'googleauth'
+require 'google/apis/sheets_v4'
+require 'optparse'
+require 'csv'
+
+options = { ranges: %w[A:ZZZ] }
+
+option_parser = OptionParser.new do |opts|
+  opts.banner = <<~USAGE
+    Usage: #{__FILE__} [options] [SHEET_ID]
+
+    Environment Variables:
+
+    - GOOGLE_SHEETS_TO_CSV_KEY - used for only public sheets
+    - GOOGLE_SHEETS_TO_CSV_CREDENTIAL_PATH - used for both public and private sheets
+
+  USAGE
+
+  opts.on('-r', '--ranges A:Z,Sheet2', Array, 'A list of A1 notations of the values to retrieve.') do |ranges|
+    options[:ranges] = ranges
+  end
+
+  opts.on('-h', '--help', 'Prints this help') do
+    puts opts
+    exit
+  end
+end
+option_parser.parse!
+
+sheet_id = ARGV.shift
+
+if sheet_id.nil?
+  puts option_parser
+  exit
+end
+
+unless ENV['GOOGLE_SHEETS_TO_CSV_KEY'] || ENV['GOOGLE_SHEETS_TO_CSV_CREDENTIAL_PATH']
+  warn <<~WARNING
+    Missing environment variables:
+
+      - GOOGLE_SHEETS_TO_CSV_KEY
+      - GOOGLE_SHEETS_TO_CSV_CREDENTIAL_PATH
+
+    Please set at least one of them.
+  WARNING
+end
+
+sheet = Google::Apis::SheetsV4::SheetsService.new
+sheet.key = ENV['GOOGLE_SHEETS_TO_CSV_KEY'] if ENV['GOOGLE_SHEETS_TO_CSV_KEY']
+if ENV['GOOGLE_SHEETS_TO_CSV_CREDENTIAL_PATH']
+  sheet.authorization =
+    Google::Auth::ServiceAccountCredentials
+    .make_creds(
+      json_key_io: File.open(ENV['GOOGLE_SHEETS_TO_CSV_CREDENTIAL_PATH']),
+      scope: Google::Apis::SheetsV4::AUTH_SPREADSHEETS_READONLY
+    )
+end
+
+begin
+  response = sheet.batch_get_spreadsheet_values(sheet_id, ranges: options[:ranges])
+rescue Google::Apis::ClientError => e
+  body = JSON.parse(e.body)['error']
+  warn body['message']
+  case body['status']
+  when 'PERMISSION_DENIED'
+    warn 'Please try to set GOOGLE_SHEETS_TO_CSV_CREDENTIAL_PATH and grant permissions to the service account email.'
+  end
+  exit 1
+end
+
+csv = CSV.new($stdout)
+response.value_ranges.each do |value_range|
+  value_range.values.each do |row|
+    csv << row
+  end
+end
